@@ -20,14 +20,16 @@ const patched=Buffer.from(patchOrtWebGpuF32Accumulate(original.toString('utf8'))
 if(hash(original)===hash(patched))throw Error('Expected upstream MatMul accumulator patch to modify the original runtime');
 if(patchOrtWebGpuF32Accumulate(patched.toString('utf8'))!==patched.toString('utf8'))throw Error('Patch is not idempotent');
 await writeFile(path.join(out,'ort.all.min.mjs'),patched);
-const files=[{path:'runtime/ort.all.min.mjs',size:patched.length,sha256:hash(patched),upstreamSha256:hash(original)}];
+await writeFile(path.join(out,'ort.all.original.min.mjs'),original);
+const files=[{path:'runtime/ort.all.min.mjs',size:patched.length,sha256:hash(patched),upstreamSha256:hash(original)},
+  {path:'runtime/ort.all.original.min.mjs',size:original.length,sha256:hash(original)}];
 for(const name of['ort-wasm-simd-threaded.jsep.mjs','ort-wasm-simd-threaded.jsep.wasm']){
   const bytes=await fetchBytes(base+'dist/'+name);await writeFile(path.join(out,name),bytes);files.push({path:'runtime/'+name,size:bytes.length,sha256:hash(bytes)});
 }
 const patch=await readFile(new URL('../patches/onnxruntime-web-f32-patch.js',import.meta.url));
 await writeFile(path.join(out,'onnxruntime-web-f32-patch.js'),patch);
 const license=await fetchBytes('https://raw.githubusercontent.com/microsoft/onnxruntime/v1.27.0/LICENSE');await writeFile(path.join(out,'LICENSE-onnxruntime.txt'),license);
-const manifest={version:EXPECTED_ORT_VERSION,entrypoint:'runtime/ort.all.min.mjs',backend:'JSEP WebGPU',patch:'user-supplied-webgpu-matmul-f32-accumulation',patchSha256:hash(patch),
+const manifest={version:EXPECTED_ORT_VERSION,entrypoint:'runtime/ort.all.min.mjs',originalEntrypoint:'runtime/ort.all.original.min.mjs',backend:'JSEP WebGPU',patch:'user-supplied-webgpu-matmul-f32-accumulation',patchSha256:hash(patch),
   upstream:'https://github.com/microsoft/onnxruntime',files,browserGPUValidated:false,
   note:'FP16 MatMul accumulation uses f32 intermediates. Native WebGPU correctness and speed require a GPU browser benchmark.'};
 await writeFile(path.join(out,'manifest.json'),JSON.stringify(manifest,null,2)+'\n');

@@ -6,13 +6,13 @@ on:
       - '.github/workflows/build-onnx.yml'
       - 'scripts/**'
       - 'patches/**'
-      - 'tests/**'
+      - 'tests/test_*.py'
+      - 'tests/runtime-patch.test.mjs'
       - 'models.json'
       - 'requirements-build.txt'
       - 'package.json'
       - 'MODEL_CARD.md'
       - 'UPSTREAM_LICENSE'
-      - 'benchmark/**'
   pull_request:
   workflow_dispatch:
     inputs:
