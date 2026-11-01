@@ -110,6 +110,6 @@ try{
   if(experimentalResponse.ok){const extra=await experimentalResponse.json();if(extra.keypointCount!==133||extra.schema!=='rtmw3d-head-experiments/v1')throw Error('実験カタログの全身出力契約が不正です');for(const v of extra.variants){if(!catalog.variants.some(existing=>existing.id===v.id))catalog.variants.push(v);}}
   else if(experimentalResponse.status!==404)throw Error('実験カタログの取得に失敗: '+experimentalResponse.status);
   for(const v of catalog.variants){const label=document.createElement('label'),checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.value=v.id;checkbox.checked=v.id==='rtmw3d-l-fp32'||(v.experimental&&v.qualityPassed);label.append(checkbox,document.createTextNode(`${v.id} · ${(v.sizeBytes/1e6).toFixed(0)}MB${v.experimental?' · 等価FP32実験':''}`));$('models').append(label);}
-  for(const m of MODES){const label=document.createElement('label'),checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.value=m.id;checkbox.checked=m.id==='nhwc';label.append(checkbox,document.createTextNode(m.label));$('modes').append(label);}
+  for(const m of MODES){const label=document.createElement('label'),checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.value=m.id;checkbox.checked=m.id==='nhwc'||(m.id==='capture'&&catalog.variants.some(v=>v.gpuDecoderMinimum));label.append(checkbox,document.createTextNode(m.label));$('modes').append(label);}
   $('start').disabled=false;status(`HF revision ${revision}\n全候補：全133点。FP16・INT8の速さを仮定しません。`);
 }catch(e){status(String(e.message||e));}

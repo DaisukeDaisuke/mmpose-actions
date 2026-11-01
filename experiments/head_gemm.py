@@ -7,6 +7,29 @@ from onnx import helper, numpy_helper, TensorProto
 TARGETS={'/head/final_layer/conv/Conv','/head/final_layer2/conv/Conv'}
 
 
+def lower_score_minimum(model, target='compact_decoder/score'):
+    """Select the smaller finite FP32 score using registered GPU ops.
+
+    ORT 1.27 JSEP registers Less and Where, but not the variadic Min op.
+    This placement fix is separate from the measured Conv bottleneck.
+    """
+    model=copy.deepcopy(model)
+    nodes=[];found=False
+    for node in model.graph.node:
+        if node.name==target:
+            if node.op_type!='Min' or len(node.input)!=2:
+                raise ValueError('Expected the two-input decoder score minimum')
+            selected=target+'/gpu_less'
+            nodes.append(helper.make_node('Less',list(node.input),[selected],name=selected))
+            nodes.append(helper.make_node('Where',[selected,*node.input],list(node.output),name=target+'/gpu_select'))
+            found=True
+        else:nodes.append(copy.deepcopy(node))
+    if not found:raise ValueError('Decoder score minimum was not found')
+    del model.graph.node[:];model.graph.node.extend(nodes)
+    onnx.checker.check_model(model)
+    return model
+
+
 def lower_head_convolutions(model, splits=1, targets=TARGETS):
     original=model
     model=onnx.shape_inference.infer_shapes(copy.deepcopy(model), strict_mode=True)

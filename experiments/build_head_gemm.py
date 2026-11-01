@@ -10,7 +10,7 @@ import numpy as np
 import onnx
 import onnxruntime as ort
 from PIL import Image
-from head_gemm import lower_head_convolutions
+from head_gemm import lower_head_convolutions,lower_score_minimum
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
@@ -52,7 +52,7 @@ def validation_inputs(upstream):
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--splits',type=int,choices=[1,8],required=True)
+    parser=argparse.ArgumentParser();parser.add_argument('--splits',type=int,choices=[0,1,8],required=True)
     parser.add_argument('--upstream',type=Path,required=True);parser.add_argument('--output',type=Path,default=Path('release/experiments'))
     args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=True)
     temporary=ROOT/'.cache/head-gemm';temporary.mkdir(parents=True,exist_ok=True)
@@ -61,9 +61,12 @@ def main():
     source=next(v for v in catalog['variants'] if v['id']=='rtmw3d-l-fp32')
     path=temporary/'rtmw3d-l-fp32.onnx';download(SOURCE_BASE+source['file'],path)
     if digest(path)!=source['sha256']:raise ValueError('Source ONNX hash mismatch')
-    model=onnx.load(path);transformed,changed=lower_head_convolutions(model,args.splits)
+    model=onnx.load(path)
+    if args.splits:transformed,changed=lower_head_convolutions(model,args.splits)
+    else:transformed,changed=model,[]
+    transformed=lower_score_minimum(transformed)
     del model;gc.collect()
-    identifier='rtmw3d-l-fp32-head-gemm'+('-split8' if args.splits==8 else '')
+    identifier='rtmw3d-l-fp32-'+('head-gemm'+('-split8' if args.splits==8 else '') if args.splits else 'gpu-decoder')
     destination=args.output/(identifier+'.onnx');onnx.save_model(transformed,destination)
     del transformed;gc.collect();onnx.checker.check_model(str(destination))
     options=ort.SessionOptions();options.intra_op_num_threads=2;options.inter_op_num_threads=1
@@ -80,11 +83,11 @@ def main():
                             'scoreMaxAbsoluteError':float(np.max(np.abs(scores-reference_scores)))})
     passed=passes_fullbody_gate(comparisons)
     if not passed:raise ValueError('The equivalent FP32 head must pass every body/foot smoke gate')
-    report={'id':identifier,'model':'rtmw3d-l','policy':'fp32-head-gemm'+('-split8' if args.splits==8 else ''),
+    report={'id':identifier,'model':'rtmw3d-l','policy':identifier.removeprefix('rtmw3d-l-'),
         'file':'experiments/'+destination.name,'sizeBytes':destination.stat().st_size,'sha256':digest(destination),
         'precision':'fp32','experimental':True,'qualityPassed':passed,'browserGPUValidated':False,
         'sourceRevision':SOURCE_REVISION,'sourceModelSha256':source['sha256'],
-        'upstream':'https://github.com/open-mmlab/mmpose','weightsUnchangedFP32':True,
+        'upstream':'https://github.com/open-mmlab/mmpose','weightsUnchangedFP32':True,'gpuDecoderMinimum':'Less+Where',
         'input':source['input'],'outputs':source['outputs'],'outputBytesPerFrame':2128,'changedConvolutions':changed,
         'comparisons':comparisons,'referenceLatencyMs':[],
         'note':'Same trained weights and 133-point 3D contract; explicit im2col and optional batched split-K reduction. CPU conversion tests are not WebGPU performance or target-video accuracy measurements.'}

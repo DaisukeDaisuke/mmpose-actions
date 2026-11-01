@@ -5,10 +5,21 @@ import numpy as np
 import onnxruntime as ort
 from onnx import helper,numpy_helper,TensorProto
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'experiments'))
-from head_gemm import lower_head_convolutions
+from head_gemm import lower_head_convolutions,lower_score_minimum
 
 
 class HeadGemmTests(unittest.TestCase):
+    def test_decoder_minimum_keeps_finite_values_and_negative_scores(self):
+        graph=helper.make_graph([helper.make_node('Min',['x','y'],['output'],name='target_score')],'score',
+            [helper.make_tensor_value_info(n,TensorProto.FLOAT,[1,5]) for n in ['x','y']],
+            [helper.make_tensor_value_info('output',TensorProto.FLOAT,[1,5])])
+        model=helper.make_model(graph,opset_imports=[helper.make_opsetid('',17)]);model.ir_version=9
+        changed=lower_score_minimum(model,'target_score')
+        inputs={'x':np.array([[.1,-1,2,0,4]],np.float32),'y':np.array([[.2,3,-1,0,4]],np.float32)}
+        expected=ort.InferenceSession(model.SerializeToString(),providers=['CPUExecutionProvider']).run(None,inputs)[0]
+        actual=ort.InferenceSession(changed.SerializeToString(),providers=['CPUExecutionProvider']).run(None,inputs)[0]
+        np.testing.assert_array_equal(actual,expected)
+
     def compare_case(self,channels,kernel,pads,strides,dilations,splits):
         rng=np.random.default_rng(951)
         data=rng.normal(size=(1,channels,9,11)).astype(np.float32)
