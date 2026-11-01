@@ -5,6 +5,8 @@ import shutil
 from pathlib import Path
 from huggingface_hub import HfApi
 
+raise RuntimeError('RTMPose publication disabled: checkpoint redistribution terms need review; do not mix into existing RTMW distribution')
+
 folder = Path('release')
 variants = []
 for path in sorted(folder.glob('rtmpose-*.json')):
