@@ -11,8 +11,10 @@ from onnxruntime.quantization import CalibrationDataReader, QuantFormat, QuantTy
 p=argparse.ArgumentParser()
 p.add_argument('stage',choices=['export','quantize'])
 p.add_argument('--policy',default='fp32')
+p.add_argument('--model',choices=['rtmw-l','rtmw-x'],required=True)
 a=p.parse_args()
 root=Path.cwd()
+model_id=a.model+'-256x192'
 sys.path.insert(0,str(root/'scripts'))
 from onnx_graph import selective_float16, widen_float16_for_cpu_reference
 out=root/'release'
@@ -46,8 +48,11 @@ if a.stage=='export':
     from torch import nn
     from mmpose.apis import init_model
     torch.set_num_threads(2)
-    config=root/'upstream/configs/wholebody_2d_keypoint/rtmpose/cocktail14/rtmw-l_8xb1024-270e_cocktail14-256x192.py'
-    url='https://download.openmmlab.com/mmpose/v1/projects/rtmw/rtmw-dw-x-l_simcc-cocktail14_270e-256x192-20231122.pth'
+    size='l_8xb1024' if a.model=='rtmw-l' else 'x_8xb704'
+    config=root/f'upstream/configs/wholebody_2d_keypoint/rtmpose/cocktail14/rtmw-{size}-270e_cocktail14-256x192.py'
+    checkpoint=root/'weights'/f'{model_id}.pth'
+    if not checkpoint.is_file(): raise RuntimeError(f'GitHub checkpoint required: {checkpoint}; official-host fallback is disabled')
+    url=str(checkpoint)
     model=init_model(str(config),url,device='cpu').eval()
     class Network(nn.Module):
         def __init__(self,model):
@@ -70,7 +75,7 @@ if a.stage=='export':
         for x,y in zip(values,ref): np.testing.assert_allclose(x,y.numpy(),rtol=.003,atol=.0005)
         observed.append(xy(values))
     np.savez_compressed(base/'data.npz',**{f'input_{i}':v for i,v in enumerate(validation)},**{f'xy_{i}':v for i,v in enumerate(observed)},**{f'calibration_{i}':v for i,v in enumerate(calibration)})
-    (base/'provenance.json').write_text(json.dumps({'model':'RTMW-L 256x192','checkpoint':url,'upstream':'https://github.com/open-mmlab/mmpose','outputs':'2D133; depth must be estimated by calibrated geometry, bone constraints and time continuity','validationImages':[40083,197388],'calibrationImages':[785,196141]}),encoding='utf-8')
+    (base/'provenance.json').write_text(json.dumps({'model':model_id,'checkpoint':url,'upstream':'https://github.com/open-mmlab/mmpose','outputs':'2D133; depth must be estimated by calibrated geometry, bone constraints and time continuity','validationImages':[40083,197388],'calibrationImages':[785,196141]}),encoding='utf-8')
     print('RTMW-L 2D export complete; no depth output is fabricated')
 else:
     policy=a.policy
@@ -78,7 +83,7 @@ else:
     data=np.load(base/'data.npz')
     groups=['backbone'] if policy.endswith('-backbone') else ['neck','head'] if policy.endswith('-neck-head') else ['neck'] if policy.endswith('-neck') else ['head'] if policy.endswith('-head') else ['backbone','neck','head']
     selected=[n.name for n in model.graph.node if any('/'+g+'/' in n.name for g in groups)]
-    target=out/f'rtmw-l-256x192-{policy}.onnx'
+    target=out/f'{model_id}-{policy}.onnx'
     if policy=='fp32': onnx.save(model,str(target))
     elif policy.startswith('fp16'):
         assert selected,groups
@@ -100,6 +105,6 @@ else:
         assert all(np.isfinite(v).all() for v in values)
         coords=xy(values); error=np.linalg.norm(coords-data[f'xy_{i}'],axis=-1)[0]
         reports.append({name:float(np.quantile(error[ids],.95)) for name,ids in {'body':list(range(17)),'hips':[11,12],'knees':[13,14],'ankles':[15,16],'feet':list(range(17,23))}.items()})
-    report={'policy':policy,'bytes':target.stat().st_size,'sha256':digest(target),'selectedNodes':selected,'xyP95CropPixels':reports,'smallFixtureDriftPassed':all(v<=3 for r in reports for v in r.values()),'browserGPUValidated':False,'speedRanking':None,'notes':['Drift from FP32 is not ground-truth accuracy.','FP16 or INT8 does not guarantee faster WebGPU inference.','All 133 joints retained, including ankles/toes/heels; layer names are neural network components, not anatomical regions.']}
+    report={'model':a.model,'file':target.name,'policy':policy,'bytes':target.stat().st_size,'sha256':digest(target),'selectedNodes':selected,'xyP95CropPixels':reports,'smallFixtureDriftPassed':all(v<=3 for r in reports for v in r.values()),'browserGPUValidated':False,'speedRanking':None,'notes':['Drift from FP32 is not ground-truth accuracy.','FP16 or INT8 does not guarantee faster WebGPU inference.','All 133 joints retained, including ankles/toes/heels; layer names are neural network components, not anatomical regions.']}
     target.with_suffix('.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
     print(json.dumps(report))

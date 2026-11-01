@@ -1,10 +1,11 @@
-name: Build and publish RTMW3D ONNX
+name: Build RTMW3D and RTMW L-X ONNX matrix
 on:
   push:
     branches: [main]
     paths:
       - '.github/workflows/build-onnx.yml'
       - 'scripts/**'
+      - 'experiments/rtmw2d.py'
       - 'patches/**'
       - 'tests/test_*.py'
       - 'tests/runtime-patch.test.mjs'
@@ -16,175 +17,95 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
-      publish:
-        description: 'Publish the experiment matrix to RabbitDaisuke/rtmw3d-webgpu-onnx'
-        type: boolean
-        default: true
-permissions:
-  contents: read
-  actions: read
-concurrency:
-  group: rtmw3d-${{ github.ref }}
-  cancel-in-progress: false
-jobs:
-  export:
-    name: Export ${{ matrix.model }}
+      rtmw2d-export:
+    name: GitHub source - ${{ matrix.model }} 256x192
     runs-on: ubuntu-22.04
-    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        model: [rtmw3d-l, rtmw3d-x]
-    env:
-      OMP_NUM_THREADS: '2'
-      MKL_NUM_THREADS: '2'
-      OPENBLAS_NUM_THREADS: '2'
+        model: [rtmw-l, rtmw-x]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/github-script@v7
+        id: source
+        env:
+          MODEL: ${{ matrix.model }}
         with:
-          persist-credentials: false
-      - uses: actions/checkout@v4
+          script: |
+            const name = process.env.MODEL + '-256x192-base';
+            if (process.env.MODEL === 'rtmw-l') {
+              core.setOutput('run', '41359976048');
+              return;
+            }
+            const artifacts = await github.paginate(github.rest.actions.listArtifactsForRepo, {...context.repo, per_page: 100});
+            const hit = artifacts.find(a => a.name === name && !a.expired && a.workflow_run?.id !== context.runId);
+            if (!hit) throw new Error(name + ': GitHub weight artifact not found. Official-host download fallback is disabled. Supply the GitHub base artifact before rebuilding X.');
+            core.setOutput('run', String(hit.workflow_run.id));
+      - uses: actions/download-artifact@v4
         with:
-          repository: open-mmlab/mmpose
-          ref: 759b39c13fea6ba094afc1fa932f51dc1b11cbf9
-          path: upstream
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          cache: pip
-          cache-dependency-path: requirements-build.txt
-      - name: Install CPU export dependencies
-        run: |
-          python -m pip install 'pip==24.0' 'setuptools==69.5.1' wheel
-          python -m pip install 'torch==2.1.0+cpu' 'torchvision==0.16.0+cpu' --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install 'numpy==1.26.4'
-          python -m pip install --no-build-isolation -r requirements-build.txt
-          python -m pip install --only-binary=:all: 'mmcv==2.1.0' -f https://download.openmmlab.com/mmcv/dist/cpu/torch2.1.0/index.html
-          python -m pip install --no-deps --no-build-isolation -e ./upstream
-      - uses: actions/cache@v4
-        with:
-          path: .cache/checkpoints
-          key: mmpose-${{ matrix.model }}-official-20240626
-      - name: Test decoder graph contract
-        run: python -m unittest discover -s tests -p 'test_*.py' -v
-      - name: Export, compare with PyTorch, and validate compact ONNX
-        run: python scripts/export_models.py --model '${{ matrix.model }}' --upstream upstream --output release
+          github-token: ${{ github.token }}
+          repository: DaisukeDaisuke/mmpose-actions
+          run-id: ${{ steps.source.outputs.run }}
+          name: ${{ matrix.model }}-256x192-base
+          path: base
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.model }}-onnx
-          path: |
-            release/onnx/
-            release/reports/
-            release/fixtures/
-          retention-days: 3
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.model }}-base
-          path: release/base/${{ matrix.model }}/
-          retention-days: 1
-          if-no-files-found: error
-  quantize:
+          name: ${{ matrix.model }}-256x192-base
+          path: base/
+          retention-days: 7
+  rtmw2d-quantize:
     name: ${{ matrix.model }} / ${{ matrix.policy }}
-    needs: export
+    needs: rtmw2d-export
+    if: always()
     runs-on: ubuntu-22.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       max-parallel: 12
       matrix:
-        model: [rtmw3d-l, rtmw3d-x]
-        policy: [fp16-backbone, fp16-neck-head, int8-backbone, int8-neck, int8-head, int8-all]
-    env:
-      OMP_NUM_THREADS: '2'
-      MKL_NUM_THREADS: '2'
+        model: [rtmw-l, rtmw-x]
+        policy: [fp32, fp16-all, fp16-backbone, fp16-neck-head, int8-all, int8-backbone, int8-neck, int8-head]
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: pip
-          cache-dependency-path: requirements-build.txt
-      - run: python -m pip install numpy==1.26.4 onnx==1.17.0 onnxruntime==1.20.1 onnxconverter-common==1.14.0
+      - run: python -m pip install numpy==1.26.4 onnx==1.17.0 onnxruntime==1.20.1 onnxconverter-common==1.14.0 pillow==11.0.0
       - uses: actions/download-artifact@v4
         with:
-          name: ${{ matrix.model }}-base
+          name: ${{ matrix.model }}-256x192-base
           path: base
-      - run: python scripts/quantize_models.py --model '${{ matrix.model }}' --policy '${{ matrix.policy }}' --base base --output release
+      - run: python experiments/rtmw2d.py quantize --model '${{ matrix.model }}' --policy '${{ matrix.policy }}'
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.model }}-${{ matrix.policy }}-onnx
+          name: rtmw2d-${{ matrix.model }}-${{ matrix.policy }}-build
           path: release/
-          retention-days: 3
-          if-no-files-found: error
-  runtime:
-    name: Patch ONNX Runtime Web 1.27.0
-    runs-on: ubuntu-22.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Verify user patch and build matching runtime distribution
-        run: |
-          node --test tests/runtime-patch.test.mjs
-          node scripts/build_runtime.mjs release
-      - uses: actions/upload-artifact@v4
-        with:
-          name: runtime-onnx
-          path: release/
-          retention-days: 3
-          if-no-files-found: error
-  catalog:
-    name: Validate complete model catalog
-    needs: [export, quantize, runtime]
-    runs-on: ubuntu-22.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-      - uses: actions/download-artifact@v4
-        with:
-          path: release
-          pattern: '*-onnx'
-          merge-multiple: true
-      - run: python scripts/assemble_release.py release
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rtmw3d-webgpu-onnx-complete
-          path: release/
-          retention-days: 3
-          compression-level: 0
+          retention-days: 7
           if-no-files-found: error
   publish:
-    name: Publish to Hugging Face
-    needs: catalog
+    name: Append RTMW 2D to existing Hugging Face repository
+    needs: [catalog, rtmw2d-quantize]
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
       - uses: actions/download-artifact@v4
         with:
-          name: rtmw3d-webgpu-onnx-complete
-          path: release
+          pattern: rtmw2d-*-build
+          path: additions
+          merge-multiple: true
       - run: python -m pip install huggingface_hub==0.36.0
-      - name: Publish the experiment matrix and the matching patched runtime
-        run: python scripts/publish_hf.py release
+      - name: Append new files without changing legacy models or catalog
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          HfApi(token=os.environ['HF_TOKEN']).upload_folder(
+              repo_id='RabbitDaisuke/rtmw3d-webgpu-onnx', folder_path='additions',
+              path_in_repo='rtmw2d', delete_patterns=None,
+              commit_message='Append RTMW-L/X 256x192 precision matrix; preserve RTMW3D files')
+          PY
