@@ -1,5 +1,5 @@
 """Actions-only RTMW-L 256x192 export and layer-selective quantization."""
-import argparse, hashlib, json, sys
+import argparse, hashlib, json, sys, shutil, urllib.request
 from pathlib import Path
 import numpy as np
 import onnx
@@ -50,8 +50,22 @@ if a.stage=='export':
     torch.set_num_threads(2)
     size='l_8xb1024' if a.model=='rtmw-l' else 'x_8xb704'
     config=root/f'upstream/configs/wholebody_2d_keypoint/rtmpose/cocktail14/rtmw-{size}-270e_cocktail14-256x192.py'
-    checkpoint=root/'weights'/f'{model_id}.pth'
-    if not checkpoint.is_file(): raise RuntimeError(f'GitHub checkpoint required: {checkpoint}; official-host fallback is disabled')
+    checkpoint=root/'.cache/checkpoints'/f'{model_id}.pth'
+    checkpoint.parent.mkdir(parents=True,exist_ok=True)
+    checksum=checkpoint.with_suffix('.sha256')
+    if checkpoint.is_file() and (not checksum.is_file() or digest(checkpoint)!=checksum.read_text(encoding='utf-8').strip()):
+        checkpoint.unlink()
+    source=('https://download.openmmlab.com/mmpose/v1/projects/rtmw/' +
+        ('rtmw-dw-x-l_simcc-cocktail14_270e-256x192-20231122.pth' if a.model=='rtmw-l' else 'rtmw-x_simcc-cocktail14_pt-ucoco_270e-256x192-13a2546d_20231208.pth'))
+    if not checkpoint.is_file():
+        temporary=checkpoint.with_suffix('.part')
+        with urllib.request.urlopen(source,timeout=180) as response,temporary.open('wb') as destination:
+            shutil.copyfileobj(response,destination)
+        if temporary.stat().st_size<1000000: raise RuntimeError('Incomplete checkpoint download')
+        temporary.replace(checkpoint)
+        checksum.write_text(digest(checkpoint),encoding='utf-8')
+        print('Official checkpoint downloaded once; SHA-256 recorded for cache reuse')
+    else: print('Reusing checksum-verified checkpoint cache')
     url=str(checkpoint)
     model=init_model(str(config),url,device='cpu').eval()
     class Network(nn.Module):
