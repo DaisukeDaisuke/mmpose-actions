@@ -7,9 +7,10 @@ const status=s=>$('status').textContent=s;
 async function hash(bytes){return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(x=>x.toString(16).padStart(2,'0')).join('');}
 async function get(url){const r=await fetch(url,{credentials:'omit',referrerPolicy:'no-referrer'});if(!r.ok)throw Error(`${r.status}: ${url}`);return r;}
 async function bytes(file,sha){
-  const key=base+file,cache=await caches.open('rtmw3d-comparison-v1');let r=await cache.match(key);
+  const source=base+file,key=new URL('/__rtmw3d-cache__/sha256/'+sha,location.origin).href,cache=await caches.open('rtmw3d-comparison-v1');let r=await cache.match(key);
   if(r){const b=await r.arrayBuffer();if(await hash(b)===sha)return b;await cache.delete(key);}
-  status(`取得・照合中: ${file}`);r=await get(key);const b=await r.arrayBuffer();if(await hash(b)!==sha)throw Error(`SHA-256不一致: ${file}`);
+  for(const old of await cache.keys()){if(!old.url.endsWith('/'+file))continue;const cached=await cache.match(old);if(!cached)continue;const b=await cached.arrayBuffer();if(await hash(b)!==sha)continue;try{await cache.put(key,new Response(b));await cache.delete(old);}catch{}return b;}
+  status(`取得・照合中: ${file}`);r=await get(source);const b=await r.arrayBuffer();if(await hash(b)!==sha)throw Error(`SHA-256不一致: ${file}`);
   try{await cache.put(key,new Response(b));}catch{status('キャッシュ容量不足。取得済みモデルで計測を続けます。');}return b;
 }
 async function loadRuntime(flavour='patched'){
@@ -72,7 +73,7 @@ async function measure(){
       if($('original').checked&&variant.policy==='fp32')routes.push({mode:MODES[0],flavour:'original'});
       for(const {mode,flavour} of routes){
         if(stopped)break;
-        const record={id:variant.id,sizeBytes:variant.sizeBytes,views,requestedBackend:'webgpu',executionMode:mode.id,executionLabel:mode.label+(flavour==='original'?' / 未パッチJSEP':''),preferredLayout:mode.layout,graphCaptureRequested:mode.capture,cpuFallbackDisabled:mode.capture,runtime:flavour==='original'?'1.27.0-JSEP-original':'1.27.0-JSEP-f32-accumulation-patch',hfRevision:revision};
+        const record={id:variant.id,modelSha256:variant.sha256,sizeBytes:variant.sizeBytes,views,requestedBackend:'webgpu',executionMode:mode.id,executionLabel:mode.label+(flavour==='original'?' / 未パッチJSEP':''),preferredLayout:mode.layout,graphCaptureRequested:mode.capture,cpuFallbackDisabled:mode.capture,runtime:flavour==='original'?'1.27.0-JSEP-original':'1.27.0-JSEP-f32-accumulation-patch',hfRevision:revision};
         results.push(record);let runner;
         try{
           status(`初期化: ${variant.id} / ${record.executionLabel}`);const load=performance.now(),activeRuntime=await loadRuntime(flavour);
