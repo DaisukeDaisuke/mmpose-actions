@@ -1,0 +1,9 @@
+upstream/
+.cache/
+build/
+release/
+__pycache__/
+*.onnx
+*.pth
+*.wasm
+node_modules/

@@ -1,0 +1,23 @@
+{
+  "upstream_repository": "open-mmlab/mmpose",
+  "upstream_revision": "759b39c13fea6ba094afc1fa932f51dc1b11cbf9",
+  "runtime_version": "1.27.0",
+  "huggingface_repo_name": "rtmw3d-webgpu-onnx",
+  "huggingface_repo_id": "RabbitDaisuke/rtmw3d-webgpu-onnx",
+  "models": {
+    "rtmw3d-l": {
+      "config": "projects/rtmpose3d/configs/rtmw3d-l_8xb64_cocktail14-384x288.py",
+      "checkpoint": "https://download.openmmlab.com/mmpose/v1/wholebody_3d_keypoint/rtmw3d/rtmw3d-l_8xb64_cocktail14-384x288-794dbc78_20240626.pth",
+      "official_coco_wholebody_ap": 0.678,
+      "official_h3wb_mpjpe_m": 0.056,
+      "role": "Primary lightweight 3D candidate"
+    },
+    "rtmw3d-x": {
+      "config": "projects/rtmpose3d/configs/rtmw3d-x_8xb32_cocktail14-384x288.py",
+      "checkpoint": "https://download.openmmlab.com/mmpose/v1/wholebody_3d_keypoint/rtmw3d/rtmw3d-x_8xb64_cocktail14-384x288-b0a0eab7_20240626.pth",
+      "official_coco_wholebody_ap": 0.680,
+      "official_h3wb_mpjpe_m": 0.057,
+      "role": "Quality and performance reference for the existing X model"
+    }
+  }
+}

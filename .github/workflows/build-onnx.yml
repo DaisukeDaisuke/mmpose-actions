@@ -1,0 +1,187 @@
+name: Build and publish RTMW3D ONNX
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-onnx.yml'
+      - 'scripts/**'
+      - 'patches/**'
+      - 'tests/**'
+      - 'models.json'
+      - 'requirements-build.txt'
+      - 'package.json'
+      - 'MODEL_CARD.md'
+      - 'UPSTREAM_LICENSE'
+      - 'benchmark/**'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the experiment matrix to RabbitDaisuke/rtmw3d-webgpu-onnx'
+        type: boolean
+        default: true
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: rtmw3d-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  export:
+    name: Export ${{ matrix.model }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [rtmw3d-l, rtmw3d-x]
+    env:
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: open-mmlab/mmpose
+          ref: 759b39c13fea6ba094afc1fa932f51dc1b11cbf9
+          path: upstream
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+      - name: Install CPU export dependencies
+        run: |
+          python -m pip install 'pip==24.0' 'setuptools==69.5.1' wheel
+          python -m pip install 'torch==2.1.0+cpu' 'torchvision==0.16.0+cpu' --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install 'numpy==1.26.4'
+          python -m pip install --no-build-isolation -r requirements-build.txt
+          python -m pip install --only-binary=:all: 'mmcv==2.1.0' -f https://download.openmmlab.com/mmcv/dist/cpu/torch2.1.0/index.html
+          python -m pip install --no-deps --no-build-isolation -e ./upstream
+      - uses: actions/cache@v4
+        with:
+          path: .cache/checkpoints
+          key: mmpose-${{ matrix.model }}-official-20240626
+      - name: Test decoder graph contract
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Export, compare with PyTorch, and validate compact ONNX
+        run: python scripts/export_models.py --model '${{ matrix.model }}' --upstream upstream --output release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.model }}-onnx
+          path: |
+            release/onnx/
+            release/reports/
+            release/fixtures/
+          retention-days: 3
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.model }}-base
+          path: release/base/${{ matrix.model }}/
+          retention-days: 1
+          if-no-files-found: error
+  quantize:
+    name: ${{ matrix.model }} / ${{ matrix.policy }}
+    needs: export
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        model: [rtmw3d-l, rtmw3d-x]
+        policy: [fp16-backbone, fp16-neck-head, int8-backbone, int8-neck, int8-head, int8-all]
+    env:
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+      - run: python -m pip install numpy==1.26.4 onnx==1.17.0 onnxruntime==1.20.1 onnxconverter-common==1.14.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.model }}-base
+          path: base
+      - run: python scripts/quantize_models.py --model '${{ matrix.model }}' --policy '${{ matrix.policy }}' --base base --output release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.model }}-${{ matrix.policy }}-onnx
+          path: release/
+          retention-days: 3
+          if-no-files-found: error
+  runtime:
+    name: Patch ONNX Runtime Web 1.27.0
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify user patch and build matching runtime distribution
+        run: |
+          node --test tests/runtime-patch.test.mjs
+          node scripts/build_runtime.mjs release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-onnx
+          path: release/
+          retention-days: 3
+          if-no-files-found: error
+  catalog:
+    name: Validate complete model catalog
+    needs: [export, quantize, runtime]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          pattern: '*-onnx'
+          merge-multiple: true
+      - run: python scripts/assemble_release.py release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rtmw3d-webgpu-onnx-complete
+          path: release/
+          retention-days: 3
+          if-no-files-found: error
+  publish:
+    name: Publish to Hugging Face
+    needs: catalog
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - uses: actions/download-artifact@v4
+        with:
+          name: rtmw3d-webgpu-onnx-complete
+          path: release
+      - run: python -m pip install huggingface_hub==0.36.0
+      - name: Publish the experiment matrix and the matching patched runtime
+        run: python scripts/publish_hf.py release
