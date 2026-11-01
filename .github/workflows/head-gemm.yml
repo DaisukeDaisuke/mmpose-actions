@@ -1,0 +1,92 @@
+name: Build measured FP32 head optimizations
+on:
+  push:
+    branches: [main]
+    paths: ['experiments/**', 'tests/head_gemm_test.py', '.github/workflows/head-gemm.yml']
+  pull_request:
+    paths: ['experiments/**', 'tests/head_gemm_test.py', '.github/workflows/head-gemm.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: head-gemm-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    name: FP32 head GEMM / split ${{ matrix.splits }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        splits: [1, 8]
+    env:
+      OMP_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: open-mmlab/mmpose
+          ref: 759b39c13fea6ba094afc1fa932f51dc1b11cbf9
+          path: upstream
+          persist-credentials: false
+          sparse-checkout: tests/data/coco
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: python -m pip install numpy==1.26.4 onnx==1.17.0 onnxruntime==1.20.1 pillow==10.4.0
+      - name: Test equivalent convolutions, padding, stride, dilation and split-K
+        run: python -m unittest discover -s tests -p 'head_gemm_test.py' -v
+      - name: Build and compare all 133 joints against the same FP32 weights
+        run: python experiments/build_head_gemm.py --splits '${{ matrix.splits }}' --upstream upstream
+      - uses: actions/upload-artifact@v4
+        with:
+          name: head-gemm-${{ matrix.splits }}
+          path: release/experiments/
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+  publish:
+    name: Publish FP32 head experiments
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: head-gemm-*
+          path: release/experiments
+          merge-multiple: true
+      - run: python -m pip install huggingface_hub==0.36.0
+      - name: Verify hashes and publish the two full-body FP32 candidates
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          from huggingface_hub import HfApi
+          folder=Path('release/experiments')
+          variants=[json.loads(p.read_text(encoding='utf-8')) for p in sorted(folder.glob('rtmw3d-l-fp32-head-gemm*.json'))]
+          assert len(variants)==2
+          for variant in variants:
+              path=folder/Path(variant['file']).name
+              assert hashlib.sha256(path.read_bytes()).hexdigest()==variant['sha256']
+              assert variant['qualityPassed'] and variant['outputs'][0]['shape']==[1,133,3]
+          catalog={'schema':'rtmw3d-head-experiments/v1','sourceCommit':os.environ['GITHUB_SHA'],'keypointCount':133,'variants':variants,'browserGPUValidated':False}
+          (folder/'catalog.json').write_text(json.dumps(catalog,indent=2)+'\n',encoding='utf-8')
+          (folder/'README.md').write_text('# Equivalent FP32 head experiments\nKeep RTMW3D-L trained weights, image resolution and all 133 3D joints while comparing explicit im2col plus MatMul against the original convolution kernels. The split8 candidate increases the batch of independent partial products and sums their FP32 results. Neither candidate is assumed faster before GPU measurement.\nUpstream model and implementation: https://github.com/open-mmlab/mmpose\nOnly the two measured final head convolutions are rewritten. Original FP32 weights are reordered without quantization; all other model parameters are preserved. Both candidates pass small public-fixture CPU conversion checks, including independent hips, knees, ankles and foot gates. This is not target-video accuracy or native WebGPU validation.\nUse the browser benchmark to measure synchronized inference, output drift and per-kernel GPU time on the target device.\n',encoding='utf-8')
+          api=HfApi(token=os.environ['HF_TOKEN'])
+          api.upload_folder(repo_id='RabbitDaisuke/rtmw3d-webgpu-onnx',repo_type='model',folder_path=str(folder),path_in_repo='experiments',allow_patterns=['*.onnx','*.json','README.md'],commit_message='Compare equivalent FP32 head GEMM layouts '+os.environ['GITHUB_SHA'])
+          print('Published 2 full-body FP32 experiments')
+          PY

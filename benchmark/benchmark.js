@@ -68,7 +68,7 @@ async function measure(){
     runContext={source:{width:video.videoWidth,height:video.videoHeight,duration:video.duration},inputShape:[1,3,384,288],sampleFractions:[.2,.5,.8],roiPercent:Object.fromEntries(['x','y','w','h'].map(k=>[k,Number($(k).value)])),views,iterations,warmupRuns:5};
     for(const variant of variants){
       if(stopped)break;const data=await bytes(variant.file,variant.sha256);
-      const routes=modes.map(mode=>({mode,flavour:'patched'}));
+      const routes=modes.filter(mode=>requestedModes.includes(mode.id)||(variant.policy==='fp32'&&mode.id==='standard')).map(mode=>({mode,flavour:'patched'}));
       if($('original').checked&&variant.policy==='fp32')routes.push({mode:MODES[0],flavour:'original'});
       for(const {mode,flavour} of routes){
         if(stopped)break;
@@ -106,7 +106,10 @@ $('native-input').onclick=()=>{if(!preparedInputs)return;if(new Uint8Array(new U
 try{
   const model=await(await get(`https://huggingface.co/api/models/${REPO}`)).json();revision=model.sha;base=`https://huggingface.co/${REPO}/resolve/${revision}/`;catalog=await(await get(base+'models.json')).json();
   if(catalog.keypointCount!==133)throw Error('全身133点のカタログではありません');$('models').replaceChildren();
-  for(const v of catalog.variants){const label=document.createElement('label'),checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.value=v.id;checkbox.checked=v.id==='rtmw3d-l-fp32';label.append(checkbox,document.createTextNode(`${v.id} · ${(v.sizeBytes/1e6).toFixed(0)}MB`));$('models').append(label);}
-  for(const m of MODES){const label=document.createElement('label'),checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.value=m.id;checkbox.checked=true;label.append(checkbox,document.createTextNode(m.label));$('modes').append(label);}
+  const experimentalResponse=await fetch(base+'experiments/catalog.json',{credentials:'omit',referrerPolicy:'no-referrer'});
+  if(experimentalResponse.ok){const extra=await experimentalResponse.json();if(extra.keypointCount!==133||extra.schema!=='rtmw3d-head-experiments/v1')throw Error('実験カタログの全身出力契約が不正です');for(const v of extra.variants){if(!catalog.variants.some(existing=>existing.id===v.id))catalog.variants.push(v);}}
+  else if(experimentalResponse.status!==404)throw Error('実験カタログの取得に失敗: '+experimentalResponse.status);
+  for(const v of catalog.variants){const label=document.createElement('label'),checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.value=v.id;checkbox.checked=v.id==='rtmw3d-l-fp32'||(v.experimental&&v.qualityPassed);label.append(checkbox,document.createTextNode(`${v.id} · ${(v.sizeBytes/1e6).toFixed(0)}MB${v.experimental?' · 等価FP32実験':''}`));$('models').append(label);}
+  for(const m of MODES){const label=document.createElement('label'),checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.value=m.id;checkbox.checked=m.id==='nhwc';label.append(checkbox,document.createTextNode(m.label));$('modes').append(label);}
   $('start').disabled=false;status(`HF revision ${revision}\n全候補：全133点。FP16・INT8の速さを仮定しません。`);
 }catch(e){status(String(e.message||e));}
