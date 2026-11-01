@@ -12,7 +12,7 @@ from onnxconverter_common import float16
 import onnxruntime as ort
 from onnxruntime.quantization import CalibrationDataReader, CalibrationMethod, QuantFormat, QuantType, quantize_static
 
-from onnx_graph import append_simcc_decoder, widen_float16_for_cpu_reference
+from onnx_graph import append_simcc_decoder, widen_float16_for_cpu_reference, selective_float16
 from quality import drift, passes_fullbody_gate
 
 POLICIES = ['fp16-backbone', 'fp16-neck-head', 'int8-backbone', 'int8-neck', 'int8-head', 'int8-all']
@@ -52,8 +52,7 @@ def run():
     if policy.startswith('fp16'):
         selected_names = {n.name for n in selected}
         blocked = sorted(set(float16.DEFAULT_OP_BLOCK_LIST) | {'ReduceL2', 'ReduceSum', 'Sqrt', 'Pow'})
-        variant = float16.convert_float_to_float16(original, keep_io_types=True, op_block_list=blocked,
-            node_block_list=[n.name for n in original.graph.node if n.name not in selected_names])
+        variant = selective_float16(original, selected_names, blocked)
         precision = 'mixed-fp16'
     else:
         target_nodes = [n for n in selected if n.op_type in ['Conv', 'MatMul', 'Gemm']]
@@ -98,7 +97,8 @@ def run():
     digest = hashlib.sha256(destination.read_bytes()).hexdigest()
     quality = passes_fullbody_gate(comparisons)
     result = {'id': f'{args.model}-{policy}', 'model': args.model, 'file': f'onnx/{destination.name}', 'policy': policy,
-        'precision': precision, 'layerGroups': groups, 'selectedNodeCount': len(target_nodes), 'selectedNodes': [n.name for n in target_nodes],
+        'precision': precision, 'layerGroups': groups, 'excludedWeightsPreservedFP32': policy.startswith('fp16'),
+        'selectedNodeCount': len(target_nodes), 'selectedNodes': [n.name for n in target_nodes],
         'sizeBytes': destination.stat().st_size, 'sha256': digest, 'outputBytesPerFrame': 2128,
         'input': {'name': 'input', 'type': 'float32', 'shape': [1, 3, 384, 288]},
         'outputs': [{'name': 'keypoints', 'shape': [1, 133, 3], 'type': 'float32'}, {'name': 'scores', 'shape': [1, 133], 'type': 'float32'}],

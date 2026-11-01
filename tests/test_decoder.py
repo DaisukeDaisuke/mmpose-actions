@@ -8,10 +8,33 @@ from onnx import TensorProto, helper
 import onnxruntime as ort
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from onnx_graph import append_simcc_decoder
+from onnx_graph import append_simcc_decoder, selective_float16, widen_float16_for_cpu_reference
+from onnx import numpy_helper
 
 
 class DecoderGraphTests(unittest.TestCase):
+    def test_unselected_layer_keeps_exact_fp32_weights(self):
+        a = np.array([[1.0002, .1], [.2, 1.0003]], np.float32)
+        b = np.array([[1.0002, .3], [.4, 1.0003]], np.float32)
+        graph = helper.make_graph([
+            helper.make_node('MatMul', ['input', 'a'], ['features'], name='/backbone/MatMul'),
+            helper.make_node('MatMul', ['features', 'b'], ['output'], name='/head/MatMul')],
+            'selection-test', [helper.make_tensor_value_info('input', TensorProto.FLOAT, [1, 2])],
+            [helper.make_tensor_value_info('output', TensorProto.FLOAT, [1, 2])],
+            initializer=[numpy_helper.from_array(a, 'a'), numpy_helper.from_array(b, 'b')])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid('', 17)])
+        model.ir_version = 9
+        converted = selective_float16(model, {'/backbone/MatMul'}, set())
+        head = next(n for n in converted.graph.node if n.name == '/head/MatMul')
+        stored = next(t for t in converted.graph.initializer if t.name == head.input[1])
+        self.assertEqual(stored.data_type, TensorProto.FLOAT)
+        np.testing.assert_array_equal(numpy_helper.to_array(stored), b)
+        evaluated = widen_float16_for_cpu_reference(converted)
+        session = ort.InferenceSession(evaluated.SerializeToString(), providers=['CPUExecutionProvider'])
+        source = np.array([[.5, 1]], np.float32)
+        observed = session.run(None, {'input': source})[0]
+        np.testing.assert_allclose(observed, source @ a.astype(np.float16).astype(np.float32) @ b, atol=1e-6)
+
     def test_exact_maximum_ties_missing_and_depth_denominator(self):
         names = ['x', 'y', 'z']
         shapes = [[1, 133, n] for n in [576, 768, 576]]

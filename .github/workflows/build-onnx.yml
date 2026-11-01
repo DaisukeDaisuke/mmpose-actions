@@ -164,6 +164,7 @@ jobs:
           name: rtmw3d-webgpu-onnx-complete
           path: release/
           retention-days: 3
+          compression-level: 0
           if-no-files-found: error
   publish:
     name: Publish to Hugging Face
