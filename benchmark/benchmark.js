@@ -1,7 +1,7 @@
 import {MODES,GROUPS,percentile as pct,compare,qualityGate,createExecution,summarizeProfile} from './execution.js';
 const $=id=>document.getElementById(id),REPO='RabbitDaisuke/rtmw3d-webgpu-onnx';
 const video=$('video'),crop=$('crop'),ctx=crop.getContext('2d',{willReadFrequently:true});
-let catalog,revision,base,ort,stopped=false,results=[],videoURL,runContext;
+let catalog,revision,base,ort,stopped=false,results=[],videoURL,runContext,preparedInputs;
 const runtimes=new Map();
 const status=s=>$('status').textContent=s;
 async function hash(bytes){return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(x=>x.toString(16).padStart(2,'0')).join('');}
@@ -55,7 +55,7 @@ async function profile(runtime,data,mode,inputs){
   }finally{if(runner)await runner.release();runtime.env.webgpu.profiling={mode:'off',ondata:()=>{}};}
 }
 async function measure(){
-  stopped=false;results=[];render();$('start').disabled=true;$('stop').disabled=false;$('download').disabled=true;
+  stopped=false;results=[];render();$('start').disabled=true;$('stop').disabled=false;$('download').disabled=true;$('native-input').disabled=true;
   try{
     const selected=[...document.querySelectorAll('#models input:checked')].map(x=>x.value),set=new Set(selected);
     for(const id of selected){const family=catalog.variants.find(v=>v.id===id).model;set.add(family+'-fp32');}
@@ -64,6 +64,7 @@ async function measure(){
     if(!selected.length||!requestedModes.length)throw Error('モデルと実行経路を選択してください');
     const modes=MODES.filter(m=>m.id==='standard'||requestedModes.includes(m.id));
     const runtime=await loadRuntime(),inputs=await sampleInputs(),reference=new Map(),views=Number($('views').value),iterations=Math.max(12,Math.min(1000,Number($('iterations').value)||200));
+    preparedInputs=inputs;$('native-input').disabled=false;
     runContext={source:{width:video.videoWidth,height:video.videoHeight,duration:video.duration},inputShape:[1,3,384,288],sampleFractions:[.2,.5,.8],roiPercent:Object.fromEntries(['x','y','w','h'].map(k=>[k,Number($(k).value)])),views,iterations,warmupRuns:5};
     for(const variant of variants){
       if(stopped)break;const data=await bytes(variant.file,variant.sha256);
@@ -101,6 +102,7 @@ async function measure(){
 $('video-file').onchange=e=>{if(!e.target.files[0])return;if(videoURL)URL.revokeObjectURL(videoURL);videoURL=URL.createObjectURL(e.target.files[0]);video.src=videoURL;video.load();};
 $('start').onclick=measure;$('stop').onclick=()=>{stopped=true;};
 $('download').onclick=()=>{const data={schema:'rtmw3d-gpu-comparison/v2',createdAt:new Date().toISOString(),source:runContext?.source,runContext,results,notes:['All variants output all 133 joints','Differences are relative to the architecture FP32 standard-path result, not ground truth','Timings include input upload, GPU completion and fresh 133-joint CPU readback','GPU timestamp profiling uses a separate session and is excluded from speed measurements','requestedBackend is the requested provider; it does not prove that every node ran on GPU','1–4 inputs measure a shared-session workload, not synchronized physical cameras','GPU utilization, VRAM, device identity, video names and video contents are not exported']};const u=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=u;a.download='rtmw3d-fullbody-gpu-comparison.json';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);};
+$('native-input').onclick=()=>{if(!preparedInputs)return;if(new Uint8Array(new Uint32Array([1]).buffer)[0]!==1)throw Error('この端末ではlittle-endian入力を保存できません');const url=URL.createObjectURL(new Blob(preparedInputs,{type:'application/octet-stream'})),a=document.createElement('a');a.href=url;a.download='rtmw3d-native-inputs.f32';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 try{
   const model=await(await get(`https://huggingface.co/api/models/${REPO}`)).json();revision=model.sha;base=`https://huggingface.co/${REPO}/resolve/${revision}/`;catalog=await(await get(base+'models.json')).json();
   if(catalog.keypointCount!==133)throw Error('全身133点のカタログではありません');$('models').replaceChildren();

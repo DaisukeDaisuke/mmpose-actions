@@ -2,9 +2,9 @@ name: Validate and publish browser benchmark
 on:
   push:
     branches: [main]
-    paths: ['benchmark/**', 'tests/benchmark.test.mjs', '.github/workflows/benchmark.yml']
+    paths: ['benchmark/**', 'tests/benchmark.test.mjs', 'tests/mediapipe-assets.mjs', '.github/workflows/benchmark.yml']
   pull_request:
-    paths: ['benchmark/**', 'tests/benchmark.test.mjs', '.github/workflows/benchmark.yml']
+    paths: ['benchmark/**', 'tests/benchmark.test.mjs', 'tests/mediapipe-assets.mjs', '.github/workflows/benchmark.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -26,7 +26,10 @@ jobs:
         run: |
           node --check benchmark/benchmark.js
           node --check benchmark/execution.js
+          node --check benchmark/mediapipe.js
+          node --check benchmark/mediapipe-adapter.js
           node --test tests/benchmark.test.mjs
+          node tests/mediapipe-assets.mjs
       - uses: actions/setup-python@v5
         if: github.event_name != 'pull_request'
         with:
@@ -36,6 +39,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
+          PYTHONPYCACHEPREFIX="$RUNNER_TEMP/rtmw-pycache" python -m py_compile benchmark/native_benchmark.py
           python -m pip install huggingface_hub==0.36.0
           python - <<'PY'
           import os

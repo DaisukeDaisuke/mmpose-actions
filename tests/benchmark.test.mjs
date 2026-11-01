@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {MODES,GROUPS,createExecution,qualityGate,summarizeProfile,compare} from '../benchmark/execution.js';
+import {poseWorldResult} from '../benchmark/mediapipe-adapter.js';
 
 globalThis.GPUBufferUsage={STORAGE:1,COPY_SRC:2,COPY_DST:4,MAP_READ:8};
 globalThis.GPUMapMode={READ:1};
@@ -69,4 +70,11 @@ test('GPU profiling nanoseconds are converted to ms and never treated as wall la
   const summary=summarizeProfile([{kernelType:'Conv',kernelName:'a',programName:'p',startTime:1e6,endTime:3e6},{kernelType:'Conv',kernelName:'a',programName:'p',startTime:5e6,endTime:8e6}]);
   assert.equal(summary.available,true);assert.equal(summary.summedKernelMs,5);assert.equal(summary.topKernels[0].dispatches,2);
   assert.equal(summarizeProfile([]).available,false);
+});
+test('Holistic world alias is accepted only for its verified pinned SDK',()=>{
+  const points=Array.from({length:33},()=>({x:0,y:0,z:1}));
+  assert.equal(poseWorldResult({za:points},'holistic','0.5.1675471629').points,points);
+  assert.equal(poseWorldResult({za:points},'holistic','future').points.length,0);
+  assert.equal(poseWorldResult({za:points},'pose','0.5.1675471629').points.length,0);
+  assert.equal(poseWorldResult({poseWorldLandmarks:points},'pose','0.5.1675469404').field,'poseWorldLandmarks');
 });
