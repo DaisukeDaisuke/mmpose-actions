@@ -1,0 +1,121 @@
+name: Build RTMPose tiny-small WholeBody133
+on:
+  push:
+    branches: [main]
+    paths: ['lightpose/**', '.github/workflows/build-lightpose.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: lightpose-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  export:
+    name: Export ${{ matrix.model }} 133 points
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [rtmpose-t, rtmpose-s]
+    env:
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache/restore@v4
+        id: checkpoint
+        with:
+          path: .cache/checkpoints
+          key: lightpose-${{ matrix.model }}-official-v1
+      - uses: actions/checkout@v4
+        with:
+          repository: open-mmlab/mmpose
+          ref: 759b39c13fea6ba094afc1fa932f51dc1b11cbf9
+          path: upstream
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+      - name: Install export dependencies
+        run: |
+          python -m pip install pip==24.0 setuptools==69.5.1 wheel
+          python -m pip install torch==2.1.0+cpu torchvision==0.16.0+cpu --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install numpy==1.26.4
+          python -m pip install --no-build-isolation -r requirements-build.txt
+          python -m pip install --only-binary=:all: mmcv==2.1.0 -f https://download.openmmlab.com/mmcv/dist/cpu/torch2.1.0/index.html
+          python -m pip install --no-deps --no-build-isolation -e ./upstream
+      - name: Convert the trained wholebody model
+        run: python lightpose/export.py export --model '${{ matrix.model }}'
+      - uses: actions/cache/save@v4
+        if: always() && steps.checkpoint.outputs.cache-hit != 'true' && hashFiles('.cache/checkpoints/*.sha256') != ''
+        with:
+          path: .cache/checkpoints
+          key: lightpose-${{ matrix.model }}-official-v1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lightpose-${{ matrix.model }}-base
+          path: base/
+          if-no-files-found: error
+          retention-days: 7
+  variants:
+    name: ${{ matrix.model }} / ${{ matrix.policy }}
+    needs: export
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        model: [rtmpose-t, rtmpose-s]
+        policy: [fp32, fp16-all, fp16-backbone, fp16-head, int8-all, int8-backbone, int8-head]
+    env:
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: python -m pip install numpy==1.26.4 onnx==1.17.0 onnxruntime==1.20.1 onnxconverter-common==1.14.0 pillow==11.0.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: lightpose-${{ matrix.model }}-base
+          path: base
+      - name: Build precision variant and record ankle-foot drift
+        run: python lightpose/export.py quantize --model '${{ matrix.model }}' --policy '${{ matrix.policy }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lightpose-${{ matrix.model }}-${{ matrix.policy }}-release
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    name: Append lightweight wholebody models to Hugging Face
+    needs: variants
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lightpose-*-release
+          path: release
+          merge-multiple: true
+      - run: python -m pip install huggingface_hub==0.36.0
+      - name: Publish with source metadata, without changing existing models
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python lightpose/publish.py
