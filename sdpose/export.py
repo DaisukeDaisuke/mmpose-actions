@@ -48,7 +48,7 @@ def export_pose_graph(torch, model, inputs, path, names, outputs):
         onnxscript_apis.convert_version = original_convert
 
 
-def describe(folder, component, policy):
+def describe(folder, component, policy, fp16_conversion=None):
     import onnx
     model_path = folder / 'model.onnx'
     onnx.checker.check_model(str(model_path))
@@ -62,7 +62,7 @@ def describe(folder, component, policy):
               'dimensions': 2, 'inputs': list(map(contract, graph.graph.input)),
               'outputs': list(map(contract, graph.graph.output)),
               'browserGPUValidated': False, 'accuracyValidated': False,
-              'speedValidated': False,
+              'speedValidated': False, 'fp16Conversion': fp16_conversion,
               'files': [fingerprint(p) for p in sorted(folder.iterdir()) if p.is_file()]}
     (folder / 'manifest.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
 
@@ -179,9 +179,25 @@ def quantize(component, policy, source, folder):
     from onnx import helper, numpy_helper
 
     model = onnx.load(str(source / 'model.onnx'))
+    rounding = None
     if policy == 'fp16':
         from onnxconverter_common.float16 import convert_float_to_float16
-        model = convert_float_to_float16(model, keep_io_types=True, disable_shape_infer=True)
+        count = zeros = outside = 0
+        for tensor in model.graph.initializer:
+            if tensor.data_type != onnx.TensorProto.FLOAT:
+                continue
+            values = numpy_helper.to_array(tensor).reshape(-1)
+            count += values.size
+            for offset in range(0, values.size, 1024 * 1024):
+                chunk = values[offset:offset + 1024 * 1024]
+                zeros += int(np.count_nonzero((chunk != 0) & (np.abs(chunk) <= 2.0 ** -25)))
+                outside += int(np.count_nonzero(np.isfinite(chunk) & (np.abs(chunk) > 65504)))
+        rounding = {'minPositiveClamp': 0.0, 'maxFiniteValue': 65504.0,
+                    'convertedWeightElements': count, 'nonzeroWeightsRoundedToZero': zeros,
+                    'weightsOutsideFiniteFP16Range': outside,
+                    'note': 'Native FP16 rounding retains subnormals; GPU execution may flush subnormals.'}
+        model = convert_float_to_float16(model, keep_io_types=True, disable_shape_infer=True,
+                                        min_positive_val=0.0, max_finite_val=65504.0)
     else:
         selected = policy.removeprefix('int8-weight-')
         initializers = {w.name: w for w in model.graph.initializer}
@@ -218,7 +234,7 @@ def quantize(component, policy, source, folder):
                     all_tensors_to_one_file=True, location='weights.bin', size_threshold=1024)
     del model
     gc.collect()
-    describe(folder, component, policy)
+    describe(folder, component, policy, fp16_conversion=rounding)
 
 
 if __name__ == '__main__':
