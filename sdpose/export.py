@@ -135,9 +135,13 @@ def export(component, folder):
         names, outputs = ['latent'], ['heatmaps']
     gc.collect()
     with torch.no_grad():
+        # The legacy JIT exporter serializes the >2GiB pose graph before
+        # externalizing tensors. Dynamo writes that graph with external data.
+        use_dynamo = component == 'pose'
+        options = {'optimize': False} if use_dynamo else {'do_constant_folding': False}
         torch.onnx.export(model, inputs, str(folder / 'model.onnx'), input_names=names,
-                          output_names=outputs, opset_version=17, dynamo=False,
-                          external_data=True, do_constant_folding=False)
+                          output_names=outputs, opset_version=18 if use_dynamo else 17,
+                          dynamo=use_dynamo, external_data=True, **options)
     del model
     gc.collect()
     describe(folder, component, 'fp32')
@@ -157,7 +161,8 @@ def quantize(component, policy, source, folder):
         initializers = {w.name: w for w in model.graph.initializer}
         additions, replacements, nodes = [], {}, []
         for index, node in enumerate(model.graph.node):
-            is_head = '/head/' in node.name or node.name.startswith('/head')
+            is_head = ('/head/' in node.name or node.name.startswith('/head')
+                       or any(name.startswith('head.') for name in node.input[1:]))
             eligible = selected == 'all' or selected == 'unet' and component == 'pose' and not is_head or selected == 'head' and component == 'pose' and is_head
             if eligible and node.op_type in {'Conv', 'ConvTranspose', 'MatMul', 'Gemm'} and len(node.input) > 1 and node.input[1] in initializers:
                 name = node.input[1]
