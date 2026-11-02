@@ -16,7 +16,8 @@ a=p.parse_args()
 root=Path.cwd()
 model_id=a.model+'-256x192'
 sys.path.insert(0,str(root/'scripts'))
-from onnx_graph import selective_float16, widen_float16_for_cpu_reference
+from onnx_graph import widen_float16_for_cpu_reference
+from float16_policy import selective_float16
 out=root/'release'
 out.mkdir(exist_ok=True)
 base=root/'base'
@@ -115,6 +116,21 @@ else:
         quantize_static(str(base/'simcc-fp32.onnx'),str(target),Reader(),quant_format=QuantFormat.QDQ,activation_type=QuantType.QUInt8,weight_type=QuantType.QInt8,per_channel=True,nodes_to_quantize=selected,extra_options={'WeightSymmetric':True})
     onnx.checker.check_model(str(target))
     variant=onnx.load(str(target))
+    rounding=None
+    if policy.startswith('fp16'):
+        originals={t.name:t for t in model.graph.initializer}
+        count=zeros=outside=0
+        for tensor in variant.graph.initializer:
+            if tensor.data_type!=onnx.TensorProto.FLOAT16 or tensor.name not in originals: continue
+            before=onnx.numpy_helper.to_array(originals[tensor.name])
+            after=onnx.numpy_helper.to_array(tensor)
+            count+=before.size
+            zeros+=int(np.count_nonzero((before!=0)&(after==0)))
+            outside+=int(np.count_nonzero(np.isfinite(before)&(np.abs(before)>65504)))
+        rounding={'minPositiveClamp':0.0,'maxFiniteValue':65504.0,
+            'convertedWeightElements':count,'nonzeroWeightsRoundedToZero':zeros,
+            'weightsOutsideFiniteFP16Range':outside,
+            'note':'Native FP16 rounding retains subnormals; values below half the smallest subnormal may round to zero. Native GPU execution may flush subnormals.'}
     runtime=session(widen_float16_for_cpu_reference(variant).SerializeToString() if policy.startswith('fp16') else str(target))
     reports=[]
     for i in range(2):
@@ -123,5 +139,6 @@ else:
         coords=xy(values); error=np.linalg.norm(coords-data[f'xy_{i}'],axis=-1)[0]
         reports.append({name:float(np.quantile(error[ids],.95)) for name,ids in {'body':list(range(17)),'hips':[11,12],'knees':[13,14],'ankles':[15,16],'feet':list(range(17,23))}.items()})
     report={'model':a.model,'file':target.name,'policy':policy,'bytes':target.stat().st_size,'sha256':digest(target),'selectedNodes':selected,'xyP95CropPixels':reports,'smallFixtureDriftPassed':all(v<=3 for r in reports for v in r.values()),'browserGPUValidated':False,'speedRanking':None,'notes':['Drift from FP32 is not ground-truth accuracy.','FP16 or INT8 does not guarantee faster WebGPU inference.','All 133 joints retained, including ankles/toes/heels; layer names are neural network components, not anatomical regions.']}
+    report['fp16Conversion']=rounding
     target.with_suffix('.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
     print(json.dumps(report))
