@@ -23,6 +23,31 @@ def fingerprint(path):
     return {'file': path.name, 'bytes': path.stat().st_size, 'sha256': digest.hexdigest()}
 
 
+def export_pose_graph(torch, model, inputs, path, names, outputs):
+    from onnx_ir.passes import common as common_passes
+    from torch.onnx._internal._lazy_import import onnxscript_apis
+
+    original_convert = onnxscript_apis.convert_version
+
+    def inline_before_version_conversion(graph, target_version):
+        # onnxscript 0.4 runs unused-function cleanup AFTER its converter's
+        # no-functions precondition. Remove only unreachable definitions first.
+        common_passes.InlinePass()(graph)
+        common_passes.RemoveUnusedFunctionsPass()(graph)
+        if graph.functions:
+            raise RuntimeError('Called ONNX functions remain after inlining: ' +
+                               ', '.join(map(str, graph.functions)))
+        return original_convert(graph, target_version)
+
+    onnxscript_apis.convert_version = inline_before_version_conversion
+    try:
+        torch.onnx.export(model, inputs, str(path), input_names=names,
+                          output_names=outputs, opset_version=18, dynamo=True,
+                          external_data=True, optimize=False)
+    finally:
+        onnxscript_apis.convert_version = original_convert
+
+
 def describe(folder, component, policy):
     import onnx
     model_path = folder / 'model.onnx'
@@ -137,11 +162,12 @@ def export(component, folder):
     with torch.no_grad():
         # The legacy JIT exporter serializes the >2GiB pose graph before
         # externalizing tensors. Dynamo writes that graph with external data.
-        use_dynamo = component == 'pose'
-        options = {'optimize': False} if use_dynamo else {'do_constant_folding': False}
-        torch.onnx.export(model, inputs, str(folder / 'model.onnx'), input_names=names,
-                          output_names=outputs, opset_version=18 if use_dynamo else 17,
-                          dynamo=use_dynamo, external_data=True, **options)
+        if component == 'pose':
+            export_pose_graph(torch, model, inputs, folder / 'model.onnx', names, outputs)
+        else:
+            torch.onnx.export(model, inputs, str(folder / 'model.onnx'), input_names=names,
+                              output_names=outputs, opset_version=17, dynamo=False,
+                              external_data=True, do_constant_folding=False)
     del model
     gc.collect()
     describe(folder, component, 'fp32')
