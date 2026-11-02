@@ -9,15 +9,9 @@ permissions:
   actions: read
 concurrency:
   group: lightpose-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
-  license-hold:
-    name: RTMPose distribution paused pending checkpoint license review
-    runs-on: ubuntu-22.04
-    steps:
-      - run: echo 'RTMPose publishing is disabled. Existing RTMW and SDPose models are not changed.'
   export:
-    if: ${{ false }}
     name: Export ${{ matrix.model }} 133 points
     runs-on: ubuntu-22.04
     timeout-minutes: 35
@@ -104,7 +98,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   publish:
-    if: ${{ false }}
     name: Append lightweight wholebody models to Hugging Face
     needs: variants
     runs-on: ubuntu-22.04
