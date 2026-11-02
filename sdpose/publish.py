@@ -31,7 +31,8 @@ catalog = {'base_model': 'teemosliang/SDPose-Wholebody', 'variants': reports,
 for name in ['README.md', 'LICENSE-SDPose', 'requirements.txt', 'export.py']:
     shutil.copyfile(Path('sdpose') / name, root / name)
 api = HfApi(token=os.environ['HF_TOKEN'])
-api.create_repo('RabbitDaisuke/SDPose-Wholebody-onnx', repo_type='model', exist_ok=True)
-api.upload_folder(repo_id='RabbitDaisuke/SDPose-Wholebody-onnx', folder_path=str(root),
+destination = os.environ['HF_REPO_ID']
+assert destination == 'RabbitDaisuke/SDPose-Wholebody-onnx'
+api.upload_folder(repo_id=destination, folder_path=str(root),
                   delete_patterns=None, commit_message='Export SDPose WholeBody133 ONNX matrix ' + os.environ['GITHUB_SHA'])
 print('Published SDPose ONNX with base_model metadata')

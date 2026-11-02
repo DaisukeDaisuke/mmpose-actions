@@ -92,7 +92,7 @@ jobs:
           compression-level: 0
           if-no-files-found: error
   publish:
-    name: Publish SDPose ONNX with the correct parent model
+    name: Publish to RabbitDaisuke/SDPose-Wholebody-onnx
     needs: variants
     runs-on: ubuntu-22.04
     timeout-minutes: 35
@@ -122,4 +122,5 @@ jobs:
       - name: Verify file hashes and upload ONNX components and metadata
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO_ID: RabbitDaisuke/SDPose-Wholebody-onnx
         run: python sdpose/publish.py

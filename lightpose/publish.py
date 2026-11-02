@@ -20,9 +20,11 @@ catalog = {'schema': 'rtmpose-wholebody133/v1', 'keypointCount': 133, 'dimension
            'browserGPUValidated': False, 'speedRanking': None}
 (folder / 'catalog.json').write_text(json.dumps(catalog, indent=2) + '\n', encoding='utf-8')
 shutil.copyfile('lightpose/README.md', folder / 'README.md')
-shutil.copyfile('UPSTREAM_LICENSE', folder / 'LICENSE-MMPose')
+shutil.copyfile('UPSTREAM_LICENSE', folder / 'LICENSE')
 api = HfApi(token=os.environ['HF_TOKEN'])
-api.upload_folder(repo_id='RabbitDaisuke/rtmw3d-webgpu-onnx', folder_path=str(folder),
-                  path_in_repo='rtmpose2d', delete_patterns=None,
+destination = os.environ['HF_REPO_ID']
+assert destination == 'RabbitDaisuke/RTMPose-Wholebody-onnx'
+api.upload_folder(repo_id=destination, folder_path=str(folder),
+                  delete_patterns=None,
                   commit_message='Append RTMPose-t/s WholeBody133 precision matrix ' + os.environ['GITHUB_SHA'])
-print('Published 14 wholebody variants; existing RTMW/RTMW3D files preserved')
+print('Published 14 RTMPose wholebody variants to ' + destination)
